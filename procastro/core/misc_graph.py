@@ -21,15 +21,15 @@
 
 __all__ = ['plot_accross', 'prep_data_plot',
            'imshowz', 'figaxes_xdate', 'figaxes', 'set_plot_props',
-           'fill_between',
+           'fill_between', 'change_axes_projection',
            ]
-
-import warnings
 
 import astropy.time as apt
 import datetime
 
 import numpy
+from matplotlib.ticker import Locator, MultipleLocator
+from cartopy.crs import CRS
 
 import procastro as pa
 import matplotlib.pyplot as plt
@@ -38,7 +38,7 @@ from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 import astropy.io.fits as pf
 import numpy as np
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Dict, Any
 from procastro.core.interactive_graphics import BindingsImshowz
 from pathlib import Path, PurePath
 
@@ -151,7 +151,7 @@ def plot_accross(data,
     ticks : bool, optional
         Whether to display the ticks
     colorbar: bool, optional
-        Wheteher to use a colorbar
+        Whether to use a colorbar
     hdu : int, optional
         HDU to plot
     rotate : int, optional
@@ -437,12 +437,12 @@ def figaxes_xdate(x, axes=None, clear=True):
 
 
 def change_axes_projection(axes: Axes,
-                           projection: Union[str, Axes],
+                           projection: str | CRS,
                            keep_content: bool = False):
     """Changes the projection of existing axes. This is done by the destruction of current axis
      and creation of a new one with the new projection in the same position as the old one"""
 
-    if not keep_content:
+    if keep_content:
         raise NotImplementedError("Currently, changing axes projection loses the content")
 
     pos = axes.get_position()
@@ -451,6 +451,8 @@ def change_axes_projection(axes: Axes,
     ax.set_position(pos)
     axes.remove()
 
+    return ax
+
 
 def figaxes(axes: Union[int, plt.Figure, plt.Axes] = None,
             force_new: bool = True,
@@ -458,6 +460,7 @@ def figaxes(axes: Union[int, plt.Figure, plt.Axes] = None,
             figsize: Optional[Tuple[int, int]] = None,
             nrows: int = 1,
             ncols: int = 1,
+            projection=None,
             **kwargs,
             ) -> (plt.Figure, plt.Axes):
     """
@@ -466,6 +469,8 @@ def figaxes(axes: Union[int, plt.Figure, plt.Axes] = None,
 
     Parameters
     ----------
+    projection:
+        projection to use if new axes needs to be created. If using existing axes this parameter is omitted
     axes : int, plt.Figure, plt.Axes, None
         If axes is None, and multi col/row setup is requested, then it returns an array as in add_subplots().
         Otherwise, it always returns just one Axes instance.
@@ -483,16 +488,23 @@ def figaxes(axes: Union[int, plt.Figure, plt.Axes] = None,
     if axes is None:
         if force_new:
             fig, axs = plt.subplots(nrows, ncols,
-                                    figsize=figsize)
+                                    figsize=figsize,
+                                    subplot_kw=dict(projection=projection),
+                                    )
         else:
             plt.gcf().clf()
             fig, axs = plt.subplots(nrows, ncols,
-                                    figsize=figsize, num=plt.gcf().number, )
+                                    figsize=figsize,
+                                    num=plt.gcf().number,
+                                    subplot_kw=dict(projection=projection),
+                                    )
     elif isinstance(axes, int):
         fig = plt.figure(axes, **kwargs)
         if clear or len(fig.axes) == 0:
             fig.clf()
-            axs = fig.add_subplot(nrows, ncols, 1)
+            axs = fig.add_subplot(nrows, ncols, 1,
+                                  projection=projection,
+                                  )
         else:
             axs = fig.axes[0]
     elif isinstance(axes, plt.Figure):
@@ -500,7 +512,9 @@ def figaxes(axes: Union[int, plt.Figure, plt.Axes] = None,
         if clear:
             fig.clf()
         if len(fig.axes) == 0:
-            fig.add_subplot(nrows, ncols, 1)
+            fig.add_subplot(nrows, ncols, 1,
+                            projection=projection,
+                            )
         axs = fig.axes[0]
     elif isinstance(axes, plt.Axes):
         axs = axes
@@ -513,6 +527,93 @@ def figaxes(axes: Union[int, plt.Figure, plt.Axes] = None,
 
     return fig, axs
 
+
+class MultiBaseLocator(Locator):
+
+    def __init__(self, bases, min_ticks=3, max_ticks=6):
+        """
+
+
+        min_ticks
+        max_ticks
+        """
+        bases = sorted(set(bases), reverse=True)
+
+        self._bases = bases
+        self._locators = {}
+        self.min_ticks = min_ticks
+        self.max_ticks = max_ticks
+
+        prev = bases[0]
+        for base in bases[1:]:
+            if prev*min_ticks > base*max_ticks:
+                raise ValueError(f"Base ticks {base} do not overlap given "
+                                 f"min/max ticks of {min_ticks}/{max_ticks}")
+        super().__init__()
+
+    def _call_multiple(self, base):
+        if base not in self._locators:
+            base = MultipleLocator(base)
+        return self._locators[base]
+
+    def tick_values(self, vmin, vmax):
+        span = (vmax - vmin)/15
+
+        bases = sorted(self._bases, reverse=True)
+        if span/bases[0] > vmin:
+            return self._call_multiple(bases[0]).tick_values(vmin, vmax)
+
+        for base in bases[1:-1]:
+            if span/bases[0] > self.max_ticks:
+                raise ValueError(f"Bases [{bases}] are not overlapping."
+                                 f" Unable to solve for span {span/bases[0]} ")
+            if span/bases[0] < self.min_ticks:
+                continue
+            return self._call_multiple(base).tick_values(vmin, vmax)
+
+        return self._call_multiple(bases[-1]).tick_values(vmin, vmax)
+
+    def __call__(self):
+        vmin, vmax = self.axis.get_view_interval()
+        return self.tick_values(vmin, vmax)
+
+
+
+class RABaseLocator(MultiBaseLocator):
+    """        Parameters
+        ----------
+        bases
+            list of acceptable bases for MultipleLocator(). If None, then use
+            the ones appropriate for angles:
+            [90, 45, 30, 20, 10, 5, 2.5, 2, 1,
+             30/60, 20/60, 10/60, 5/60, 2.5/60, 2/60, 1/60,
+             30/3600, 20/3600, 10/3600, 5/3600, 2.5/3600, 2/3600, 1/3600,
+             1/36000, 1/360000]
+"""
+    def __init__(self):
+        bins = [5, 2.5, 2, 1,
+                30 / 60, 20 / 60, 10 / 60, 5 / 60, 2.5 / 60, 2 / 60, 1 / 60,
+                30 / 3600, 20 / 3600, 10 / 3600, 5 / 3600, 2.5 / 3600, 2 / 3600, 1 / 3600,
+                1 / 36000, 1 / 360000]
+        super().__init__(np.array(bins)*15)
+
+class DecBaseLocator(MultiBaseLocator):
+    """        Parameters
+        ----------
+        bases
+            list of acceptable bases for MultipleLocator(). If None, then use
+            the ones appropriate for angles:
+            [90, 45, 30, 20, 10, 5, 2.5, 2, 1,
+             30/60, 20/60, 10/60, 5/60, 2.5/60, 2/60, 1/60,
+             30/3600, 20/3600, 10/3600, 5/3600, 2.5/3600, 2/3600, 1/3600,
+             1/36000, 1/360000]
+"""
+    def __init__(self):
+        bins = [90, 45, 30, 20, 10, 5, 2.5, 2, 1,
+                30 / 60, 20 / 60, 10 / 60, 5 / 60, 2.5 / 60, 2 / 60, 1 / 60,
+                30 / 3600, 20 / 3600, 10 / 3600, 5 / 3600, 2.5 / 3600, 2 / 3600, 1 / 3600,
+                1 / 36000, 1 / 360000]
+        super().__init__(np.array(bins))
 
 if __name__ == '__main__':
     filename = Path.home().joinpath('Documents', 'test_dk.fits.gz')

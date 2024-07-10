@@ -25,8 +25,6 @@ __all__ = ['gauss', 'bipol', 'parabolic_x',
 from typing import Optional
 
 import numpy as np
-import inspect
-import scipy.signal as sg
 import astropy.units as u
 
 
@@ -114,7 +112,8 @@ def bipol(coef, x, y):
 def parabolic_x(yy_or_xx: list,
                 yy: Optional[list] = None,
                 central_idx: int = None,
-                vertex: bool = True):
+                vertex: bool = True,
+                ) -> float:
     """
     Adapted and modified to get the unknowns for defining a parabola:
     http://stackoverflow.com/questions/717762/how-to-calculate-the-vertex-of-a-parabola-given-three-points
@@ -130,20 +129,30 @@ def parabolic_x(yy_or_xx: list,
 
     vertex : bool
        If True then return x position of vertex, otherwise return closest zero-crossing to middle point
+
+
+    Returns
+    -------
+    float
+        Returns index sub-position if xx is specified; otherwise, it returns requested xx value
+
     """
 
     if central_idx is not None:
         if not (0 < central_idx < len(yy_or_xx) - 1):
             raise ValueError(f"central_idx has to be within [1, {len(yy_or_xx)-1}] (not {central_idx}), cannot be a border of `yy_or_xx`")
-        yy_or_xx = yy_or_xx[central_idx - 1: central_idx + 2]
-        if yy is not None:
+        if yy is None:
+            yy = yy_or_xx[central_idx - 1: central_idx + 2]
+            xx = [central_idx - 1, central_idx, central_idx + 1]
+        else:
+            xx = yy_or_xx[central_idx - 1: central_idx + 2]
             yy = yy[central_idx - 1: central_idx + 2]
-
-    if yy is None:
-        yy = yy_or_xx
-        xx = [-1, 0, 1]
     else:
-        xx = yy_or_xx
+        if yy is None:
+            yy = yy_or_xx
+            xx = [-1, 0, 1]
+        else:
+            xx = yy_or_xx
 
     x1, x2, x3 = xx
     y1, y2, y3 = yy
